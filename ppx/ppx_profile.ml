@@ -1,36 +1,31 @@
 open Ppxlib
 open Ast_builder.Default
 
-(* A PPX rewriter is an ordinary OCaml function from AST to AST *)
-
-(** [wrap_body ~loc ~name expr] rewrites a function's right-hand side so the
-   innermost body is timed. *)
 let rec wrap_body ~loc ~name expr =
   match expr.pexp_desc with
   | Pexp_function (params, constraint_, Pfunction_body body) ->
-      (* Still a function layer: rebuild it unchanged except for the body. *)
-      { expr with
+      {
+        expr with
         pexp_desc =
           Pexp_function
-            (params, constraint_, Pfunction_body (wrap_body ~loc ~name body))
+            (params, constraint_, Pfunction_body (wrap_body ~loc ~name body));
       }
   | _ ->
       (* Innermost body reached. [%expr ...] is a metaquot quotation *)
       [%expr
-        let __profile_start = Unix.gettimeofday () in
+        let init_data = Runtime.initialize 
+        ~file: [%e estring ~loc loc.loc_start.pos_fname]     
+        ~line: [%e eint ~loc loc.loc_start.pos_lnum]
+        ~function_name: [%e estring ~loc name]
+        in
         Fun.protect
-          ~finally:(fun () ->
-            Printf.eprintf "[profile] %s: %.12fs\n%!"
-              [%e estring ~loc name]
-              (Unix.gettimeofday () -. __profile_start))
+          ~finally:(fun () -> Runtime.finalize init_data)
           (fun () -> [%e expr])]
 
-(* The handler ppxlib calls for each `%profile` node it finds.
-   - [~ctxt] is supplied by ppxlib: metadata 
-   - [item] is the captured payload: the plain `let ...` structure item
-   We must return the structure item that replaces the extension node. *)
 let expand ~ctxt item =
+  
   let loc = Expansion_context.Extension.extension_point_loc ctxt in
+  (* Location.print_loc Format.std_formatter loc; *)
   match item.pstr_desc with
   | Pstr_value (rec_flag, bindings) ->
       (* (a list because of `let a = .. and b = ..`) *)
@@ -49,19 +44,19 @@ let expand ~ctxt item =
           bindings
       in
       { item with pstr_desc = Pstr_value (rec_flag, bindings) }
-  | _ -> (* Not a `let` *)
+  | _ ->
+      (* Not a `let` *)
       pstr_extension ~loc
         (Location.error_extensionf ~loc
            "%%profile must be attached to a let binding")
         []
 
-(* Describe the extension (nothing runs yet) *)
 let extension =
   Extension.V3.declare "profile" Extension.Context.structure_item
     Ast_pattern.(pstr (__ ^:: nil))
     expand
 
-(* Top-level side effect, executed once when the ppx driver starts  *)
+(* Executed once when the ppx driver starts  *)
 let () =
   Driver.register_transformation
     ~rules:[ Context_free.Rule.extension extension ]
