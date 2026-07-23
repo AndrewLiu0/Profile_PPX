@@ -1,5 +1,5 @@
 (executable
  (name demo)
- (libraries unix)
+ (libraries core unix)
  (preprocess
-  (pps ppx_profile)))
+  (pps ppx_jane ppx_profile)))
